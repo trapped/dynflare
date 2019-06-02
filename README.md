@@ -6,6 +6,7 @@ Detects your external IP address and updates a DNS record in Cloudflare.
 ## Install
 
 From source: `go get -u github.com/trapped/dynflare`
+
 Docker image: planned
 
 ## Setup
@@ -23,7 +24,7 @@ After setting everything up, you should be able to just run `./dynflare`; depend
 
 ## Supported IP detection mechanisms
 
-- [x] [IPify](https://ipify.org)
+- [x] [IPify](https://www.ipify.org)
 - [ ] More public services (planned)
 - [ ] Self-connect using [ngrok](https://ngrok.com) (planned)
-- [ ] Multiple source verification (this can reduce risks of bad/misbehaving sources considerably)
+- [ ] Multiple source verification (planned; this can reduce risks of bad/misbehaving sources considerably)
