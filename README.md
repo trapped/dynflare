@@ -25,6 +25,22 @@ After setting everything up, you should be able to just run `./dynflare`; depend
 ## Supported IP detection mechanisms
 
 - [x] [IPify](https://www.ipify.org)
+- [x] [MyIP](https://www.myip.com)
 - [ ] More public services (planned)
 - [ ] Self-connect using [ngrok](https://ngrok.com) (planned)
-- [ ] Multiple source verification (planned; this can reduce risks of bad/misbehaving sources considerably)
+- [x] Fetch from multiple sources and pick most seen
+
+## Contributing
+
+### Adding a new IP provider
+
+IP providers must implement the `Provider` interface:
+
+```go
+type Provider interface {
+	Name() string
+	Fetch() (string, error)
+}
+```
+
+Anyone is free to submit a pull request implementing a new IP provider.
