@@ -1,13 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/cloudflare/cloudflare-go"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -20,10 +17,16 @@ var (
 	CLOUDFLARE_RECORD  = flag.String("cloudflare-record", os.Getenv("CLOUDFLARE_RECORD"), "Cloudflare record (\"TYPE subdomain.domain\")")
 	PRINT_RECORDS      = flag.Bool("print-records", false, "Print DNS records")
 	DRY                = flag.Bool("dry", false, "Dry run")
+
+	PROVIDERS = []Provider{
+		&IPify{},
+		&MyIPCom{},
+	}
 )
 
-type IPifyResponse struct {
-	IP string `json:"ip"`
+type Provider interface {
+	Name() string
+	Fetch() (string, error)
 }
 
 func main() {
@@ -59,25 +62,42 @@ func main() {
 	if record.ID == "" {
 		log.Fatal("No matching DNS record found.")
 	}
-	resp, err := http.Get("https://api.ipify.org/?format=json")
-	if err != nil {
-		log.Fatalf("Failed to fetch external IP: %v", err)
+	// fetch IP
+	fetchedIPs := make(map[string]int)
+	for _, prov := range PROVIDERS {
+		log.Printf("Fetching from %v...", prov.Name())
+		ip, err := prov.Fetch()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			log.Printf("Invalid IP from %v ignored", prov.Name())
+			continue
+		}
+		fetchedIPs[ip]++
 	}
-	ipifyResp := IPifyResponse{}
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatalf("Failed to read HTTP response body: %v", err)
+	// best match
+	fetchedIP := ""
+	max := 0
+	for ip, count := range fetchedIPs {
+		if count > max {
+			max = count
+			fetchedIP = ip
+		}
 	}
-	err = json.Unmarshal(data, &ipifyResp)
-	if err != nil {
-		log.Fatalf("Failed to unmarshal JSON response: %v", err)
+	if fetchedIP == "" {
+		log.Fatalln("Failed to detect external IP")
 	}
-	if record.Content == ipifyResp.IP {
-		log.Printf("Cloudflare DNS record content is updated (%v).", ipifyResp.IP)
+	log.Printf("Picking %v with %v matches", fetchedIP, max)
+	// update IP
+	if record.Content == fetchedIP {
+		log.Printf("Cloudflare DNS record content is already up to date (%v).", fetchedIP)
 		os.Exit(0)
 	}
-	log.Printf("Cloudflare DNS record content is outdated; updating to %v...", ipifyResp.IP)
-	record.Content = ipifyResp.IP
+	log.Printf("Cloudflare DNS record content is outdated; updating to %v...", fetchedIP)
+	record.Content = fetchedIP
 	if !*DRY {
 		err = cf.UpdateDNSRecord(zoneID, record.ID, record)
 	} else {
