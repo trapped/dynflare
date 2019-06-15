@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"text/tabwriter"
 )
 
@@ -63,21 +64,30 @@ func main() {
 		log.Fatal("No matching DNS record found.")
 	}
 	// fetch IP
+	wg := &sync.WaitGroup{}
 	fetchedIPs := make(map[string]int)
+	fetchLock := &sync.Mutex{}
 	for _, prov := range PROVIDERS {
-		log.Printf("Fetching from %v...", prov.Name())
-		ip, err := prov.Fetch()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		ip = strings.TrimSpace(ip)
-		if ip == "" {
-			log.Printf("Invalid IP from %v ignored", prov.Name())
-			continue
-		}
-		fetchedIPs[ip]++
+		go func() {
+			defer wg.Done()
+			log.Printf("Fetching from %v...", prov.Name())
+			ip, err := prov.Fetch()
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			ip = strings.TrimSpace(ip)
+			if ip == "" {
+				log.Printf("Invalid IP from %v ignored", prov.Name())
+				return
+			}
+			fetchLock.Lock()
+			defer fetchLock.Unlock()
+			fetchedIPs[ip]++
+		}()
 	}
+	wg.Add(len(PROVIDERS))
+	wg.Wait()
 	// best match
 	fetchedIP := ""
 	max := 0
