@@ -81,7 +81,9 @@ func main() {
 	// best match
 	fetchedIP := ""
 	max := 0
+	tot := 0
 	for ip, count := range fetchedIPs {
+		tot += count
 		if count > max {
 			max = count
 			fetchedIP = ip
@@ -90,7 +92,7 @@ func main() {
 	if fetchedIP == "" {
 		log.Fatalln("Failed to detect external IP")
 	}
-	log.Printf("Picking %v with %v matches", fetchedIP, max)
+	log.Printf("Picking %v with %v/%v matches", fetchedIP, max, tot)
 	// update IP
 	if record.Content == fetchedIP {
 		log.Printf("Cloudflare DNS record content is already up to date (%v).", fetchedIP)
