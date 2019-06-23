@@ -42,4 +42,4 @@ type Provider interface {
 }
 ```
 
-Anyone is free to submit a pull request implementing a new IP provider.
+Contributions are welcome! Just submit a pull request.
