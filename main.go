@@ -11,13 +11,33 @@ import (
 	"text/tabwriter"
 )
 
+type arrayFlag []string
+
+func (af *arrayFlag) String() string {
+	return strings.Join(*af, ",")
+}
+
+func (af *arrayFlag) Set(v string) error {
+	*af = append(*af, v)
+	return nil
+}
+
+func cleanSlice(f []string) (s []string) {
+	for i := 0; i < len(f); i++ {
+		ts := strings.TrimSpace(f[i])
+		if ts != "" {
+			s = append(s, ts)
+		}
+	}
+	return
+}
+
 var (
-	CLOUDFLARE_EMAIL   = flag.String("cloudflare-email", os.Getenv("CLOUDFLARE_EMAIL"), "Cloudflare API email")
-	CLOUDFLARE_API_KEY = flag.String("cloudflare-api-key", os.Getenv("CLOUDFLARE_API_KEY"), "Cloudflare API key")
-	CLOUDFLARE_ZONE    = flag.String("cloudflare-zone", os.Getenv("CLOUDFLARE_ZONE"), "Cloudflare DNS zone (your domain)")
-	CLOUDFLARE_RECORD  = flag.String("cloudflare-record", os.Getenv("CLOUDFLARE_RECORD"), "Cloudflare record (\"TYPE subdomain.domain\")")
-	PRINT_RECORDS      = flag.Bool("print-records", false, "Print DNS records")
-	DRY                = flag.Bool("dry", false, "Dry run")
+	RECORDS            arrayFlag = cleanSlice(strings.Split(os.Getenv("RECORDS"), ","))
+	CLOUDFLARE_EMAIL             = flag.String("cloudflare-email", os.Getenv("CLOUDFLARE_EMAIL"), "Cloudflare API email")
+	CLOUDFLARE_API_KEY           = flag.String("cloudflare-api-key", os.Getenv("CLOUDFLARE_API_KEY"), "Cloudflare API key")
+	PRINT_RECORDS                = flag.Bool("p", false, "Print DNS records")
+	DRY                          = flag.Bool("dry", false, "Dry run")
 
 	PROVIDERS = []Provider{
 		&IPify{},
@@ -31,45 +51,18 @@ type Provider interface {
 }
 
 func main() {
+	flag.Var(&RECORDS, "r", "DNS record (\"<provider>:<zone>:<type>:<name>\"), multiple values supported")
 	flag.Parse()
-	target_record := strings.Split(*CLOUDFLARE_RECORD, " ")
-	cf, err := cloudflare.New(*CLOUDFLARE_API_KEY, *CLOUDFLARE_EMAIL)
-	if err != nil {
-		log.Fatalf("Failed to init Cloudflare API client: %v", err)
-	}
-	zoneID, err := cf.ZoneIDByName(*CLOUDFLARE_ZONE)
-	if err != nil {
-		log.Fatalf("Failed to get Cloudflare zone ID: %v", err)
-	}
-	records, err := cf.DNSRecords(zoneID, cloudflare.DNSRecord{})
-	if err != nil {
-		log.Fatalf("Failed to list Cloudflare DNS records for zone %v: %v", zoneID, err)
-	}
-	var record cloudflare.DNSRecord
-	w := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', 0)
-	for _, r := range records {
-		if *PRINT_RECORDS {
-			fmt.Fprintf(w, "%v\t%v\t%v\t%v\t%v\t%v\t%v\n", r.ZoneID, r.ID, r.Name, r.Type, r.TTL, r.ModifiedOn, r.Content)
-		}
-		if r.Type == target_record[0] && r.Name == target_record[1] {
-			record = r
-		}
-	}
-	if *PRINT_RECORDS {
-		w.Flush()
-		os.Exit(0)
-	}
-	log.Printf("Found DNS record %v-%v as %v -> \"%v\"", record.ZoneID, record.ID, record.Name, record.Content)
-	if record.ID == "" {
-		log.Fatal("No matching DNS record found.")
-	}
 	// fetch IP
-	wg := &sync.WaitGroup{}
+	wg := sync.WaitGroup{}
 	fetchedIPs := make(map[string]int)
-	fetchLock := &sync.Mutex{}
+	fetchLock := sync.Mutex{}
+	provChan := make(chan Provider, len(PROVIDERS))
 	for _, prov := range PROVIDERS {
+		provChan <- prov
 		go func() {
 			defer wg.Done()
+			prov := <-provChan
 			log.Printf("Fetching from %v...", prov.Name())
 			ip, err := prov.Fetch()
 			if err != nil {
@@ -103,20 +96,60 @@ func main() {
 		log.Fatalln("Failed to detect external IP")
 	}
 	log.Printf("Picking %v with %v/%v matches", fetchedIP, max, tot)
-	// update IP
-	if record.Content == fetchedIP {
-		log.Printf("Cloudflare DNS record content is already up to date (%v).", fetchedIP)
-		os.Exit(0)
+	// process all records
+	for _, record := range RECORDS {
+		parts := strings.Split(record, ":")
+		if len(parts) != 4 {
+			log.Fatalf("Invalid record format: %v", record)
+		}
+		switch parts[0] {
+		case "cloudflare":
+			cf, err := cloudflare.New(*CLOUDFLARE_API_KEY, *CLOUDFLARE_EMAIL)
+			if err != nil {
+				log.Fatalf("Failed to init Cloudflare API client: %v", err)
+			}
+			zoneID, err := cf.ZoneIDByName(parts[1])
+			if err != nil {
+				log.Fatalf("Failed to get Cloudflare zone ID: %v", err)
+			}
+			records, err := cf.DNSRecords(zoneID, cloudflare.DNSRecord{})
+			if err != nil {
+				log.Fatalf("Failed to list Cloudflare DNS records for zone %v: %v", zoneID, err)
+			}
+			var record cloudflare.DNSRecord
+			w := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', 0)
+			for _, r := range records {
+				if *PRINT_RECORDS {
+					fmt.Fprintf(w, "%v\t%v\t%v\t%v\t%v\t%v\t%v\n", r.ZoneID, r.ID, r.Name, r.Type, r.TTL, r.ModifiedOn, r.Content)
+				}
+				if r.Type == parts[2] && r.Name == parts[3] {
+					record = r
+				}
+			}
+			if *PRINT_RECORDS {
+				w.Flush()
+				continue
+			}
+			log.Printf("Found DNS record %v-%v as %v -> \"%v\"", record.ZoneID, record.ID, record.Name, record.Content)
+			if record.ID == "" {
+				log.Fatal("No matching DNS record found.")
+			}
+			// update IP
+			if record.Content == fetchedIP {
+				log.Printf("Cloudflare DNS record content is already up to date (%v).", fetchedIP)
+				os.Exit(0)
+			}
+			log.Printf("Cloudflare DNS record content is outdated; updating to %v...", fetchedIP)
+			record.Content = fetchedIP
+			if !*DRY {
+				err = cf.UpdateDNSRecord(zoneID, record.ID, record)
+			} else {
+				err = nil
+			}
+			if err != nil {
+				log.Fatalf("Failed to update DNS record: %v", err)
+			}
+			log.Println("Cloudflare DNS record updated.")
+		}
 	}
-	log.Printf("Cloudflare DNS record content is outdated; updating to %v...", fetchedIP)
-	record.Content = fetchedIP
-	if !*DRY {
-		err = cf.UpdateDNSRecord(zoneID, record.ID, record)
-	} else {
-		err = nil
-	}
-	if err != nil {
-		log.Fatalf("Failed to update DNS record: %v", err)
-	}
-	log.Println("Cloudflare DNS record updated.")
 }
